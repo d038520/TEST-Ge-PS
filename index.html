@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>標案追蹤與匯出工具</title>
+    <title>標案追蹤與匯出工具 - 修正版</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
@@ -11,10 +11,11 @@
         .header-section { background: #2c3e50; color: white; padding: 30px 0; }
         .btn-export { background-color: #27ae60; color: white; border: none; }
         .btn-export:hover { background-color: #219150; color: white; }
-        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; margin-right: 10px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .table-container { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-top: -20px; padding: 20px; }
         .money { color: #e74c3c; font-weight: bold; }
+        .badge-kw { background: #34495e; margin-right: 5px; }
     </style>
 </head>
 <body>
@@ -22,8 +23,13 @@
 <div class="header-section text-center">
     <div class="container">
         <h1>🎬 標案資料擷取系統</h1>
-        <p id="status"><span class="loader"></span> 正在讀取政府採購資料...</p>
-        <button class="btn btn-export mt-2" onclick="exportToExcel()">📥 匯出 Excel 表格</button>
+        <div id="status-box">
+            <p id="status"><span class="loader"></span> 正在連線至 API...</p>
+        </div>
+        <div class="mt-2">
+            <button class="btn btn-primary" onclick="location.reload()">🔄 重新整理</button>
+            <button class="btn btn-export" onclick="exportToExcel()">📥 匯出 Excel</button>
+        </div>
     </div>
 </div>
 
@@ -43,57 +49,76 @@
                     </tr>
                 </thead>
                 <tbody id="tender-list">
-                    </tbody>
+                    <tr><td colspan="7" class="text-center text-muted">等待資料載入中...</td></tr>
+                </tbody>
             </table>
         </div>
     </div>
 </div>
 
 <script>
-    // 關鍵字設定
-    const KEYWORDS = ["影片", "製作", "宣傳", "行銷", "AI", "短片"];
+    // 關鍵字
+    const KEYWORDS = ["影",片", "製作", "宣傳", "行銷", "AI", "短"];
     let allTenders = {};
+
+    // 解決 CORS 問題的代理伺服器 (若第一個失效會換第二個)
+    const PROXY_URL = "https://corsproxy.io/?"; 
 
     async function fetchData() {
         const statusEl = document.getElementById('status');
+        const tbody = document.getElementById('tender-list');
+        let count = 0;
+
         try {
             for (const kw of KEYWORDS) {
-                const response = await fetch(`https://pcc.g0v.ronny.tw/api/searchbytitle?query=${encodeURIComponent(kw)}`);
+                statusEl.innerHTML = `<span class="loader"></span> 正在抓取關鍵字: <strong>${kw}</strong>...`;
+                
+                // 使用 Proxy 繞過 CORS 限制
+                const targetUrl = `https://pcc.g0v.ronny.tw/api/searchbytitle?query=${encodeURIComponent(kw)}`;
+                const response = await fetch(PROXY_URL + encodeURIComponent(targetUrl));
+                
+                if (!response.ok) throw new Error("網路連線異常");
+                
                 const data = await response.json();
                 
-                if (data.records) {
+                if (data.records && data.records.length > 0) {
                     data.records.forEach(r => {
-                        // 整理資料格式
+                        // 統一資料結構
                         allTenders[r.job_number] = {
                             "預算金額": r.brief?.extra?.['預算金額'] || "未公開",
-                            "機關名稱": r.unit_name,
+                            "機關名稱": r.unit_name || "未知機關",
                             "案號": r.job_number,
                             "標案名稱": r.brief?.title || "無標題",
-                            "招標方式": r.brief?.type || "資料庫查詢",
-                            "公告日期": r.date,
+                            "招標方式": r.brief?.type || "一般招標",
+                            "公告日期": r.date || "無日期",
                             "截止投標": r.brief?.extra?.['截止投標'] || "請點詳細連結"
                         };
                     });
                 }
             }
             renderTable();
-            statusEl.innerHTML = `✅ 讀取完成！共有 ${Object.keys(allTenders).length} 筆資料。`;
+            statusEl.innerHTML = `✅ 讀取完成！共有 ${Object.keys(allTenders).length} 筆不重複標案。`;
         } catch (e) {
-            statusEl.innerHTML = "❌ 資料擷取失敗，請重新整理網頁。";
+            console.error(e);
+            statusEl.innerHTML = `<span class="text-danger">❌ 擷取失敗: ${e.message}</span><br><small>請確認網路連線或稍後再試</small>`;
         }
     }
 
     function renderTable() {
         const tbody = document.getElementById('tender-list');
-        // 按日期排序 (由新到舊)
         const sorted = Object.values(allTenders).sort((a, b) => b["公告日期"].localeCompare(a["公告日期"]));
         
+        if (sorted.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center">找不到相關標案</td></tr>';
+            return;
+        }
+
         tbody.innerHTML = sorted.map(t => `
             <tr>
                 <td class="money">${formatMoney(t["預算金額"])}</td>
                 <td>${t["機關名稱"]}</td>
-                <td><small>${t["案號"]}</small></td>
-                <td><strong>${t["標案名稱"]}</strong></td>
+                <td><small class="text-muted">${t["案號"]}</small></td>
+                <td><a href="https://pcc.g0v.ronny.tw/tender/${t['招標方式']}/${t['案號']}" target="_blank" style="text-decoration:none; color:#2c3e50;"><strong>${t["標案名稱"]}</strong></a></td>
                 <td><span class="badge bg-secondary">${t["招標方式"]}</span></td>
                 <td>${t["公告日期"]}</td>
                 <td>${t["截止投標"]}</td>
@@ -101,13 +126,12 @@
         `).join('');
     }
 
-    // 格式化金錢標示
     function formatMoney(val) {
-        if (isNaN(val)) return val;
-        return '$' + parseInt(val).toLocaleString();
+        if (!val || isNaN(val.toString().replace(/,/g, ''))) return val;
+        let num = parseInt(val.toString().replace(/,/g, ''));
+        return '$' + num.toLocaleString();
     }
 
-    // 匯出 Excel 功能
     function exportToExcel() {
         const data = Object.values(allTenders);
         if (data.length === 0) return alert("尚無資料可匯出");
@@ -116,12 +140,11 @@
         const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, worksheet, "標案清單");
         
-        // 產生檔案並下載
         const dateStr = new Date().toISOString().split('T')[0];
-        XLSX.writeFile(workbook, `標案搜尋結果_${dateStr}.xlsx`);
+        XLSX.writeFile(workbook, `政府採購標案_${dateStr}.xlsx`);
     }
 
-    // 啟動抓取
+    // 啟動
     fetchData();
 </script>
 
